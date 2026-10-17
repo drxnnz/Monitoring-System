@@ -415,6 +415,12 @@ def handle_update(update):
   chat = msg.get("chat") or {}
   if chat.get("id") is None or msg.get("from", {}).get("is_bot"):
     return
+  cmd = (msg.get("text") or "").strip().lower().split(" ")[0].split("@")[0]
+  if cmd in ("/id", "/ping"):  # diagnostics: work in any chat
+    ok = (not single_chat_mode()) or str(chat["id"]) in allowed_chat_ids()
+    note = "" if ok else "\n⚠️ Wala ang chat na ito sa TELEGRAM_CHAT_ID."
+    return say(chat["id"], f"Gising ako ✅\nChat ID nito: "
+               f"<code>{chat['id']}</code>{note}")
   if single_chat_mode() and str(chat["id"]) not in allowed_chat_ids():
     return
   handle_text(chat["id"], msg.get("text"),
