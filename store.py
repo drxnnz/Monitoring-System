@@ -114,6 +114,10 @@ def backend():
   return FileBackend(os.getenv("LOCAL_STORE_PATH", "local_store.json"))
 
 
+def storage_mode():
+  return "redis" if is_shared_store() else "file (NOT persistent on Render)"
+
+
 def is_shared_store():
   return bool(os.getenv("UPSTASH_REDIS_REST_URL", "").strip())
 

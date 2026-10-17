@@ -177,8 +177,7 @@ def handle_event(psid, text=None, payload=None):
 
   if not low:
     return None
-  if not user["onboarded"]:
-    return welcome(psid, user)
+  new = not user["onboarded"] and not user["prefs"]
   if has_word(low, ["stop", "unsubscribe", "tigil", "huwag na", "wag na"]):
     return handle_event(psid, payload="STOP")
   if any(p in low for p in WORTH_PHRASES):
@@ -190,10 +189,14 @@ def handle_event(psid, text=None, payload=None):
   if has_word(low, ["update", "updates", "balita", "bago", "latest", "news"]):
     return show_updates(psid, user)
   if has_word(low, ["hi", "hello", "hey", "yo", "kumusta", "musta"]):
+    if new:
+      return welcome(psid, user)
     n = store.pending_count(psid)
     note = f"\n\n📬 May {n} bagong na-miss ka. Tap “Ano bago?”" if n else ""
     return messenger.send_text(
         psid, "Uy! Ano kailangan mo ngayon?" + note, main_menu_qr())
+  if new:
+    return welcome(psid, user)
   return messenger.send_text(
       psid,
       "Di ko pa gets yan 😅 Pwede mo akong tanungin ng “worth it ba ang "
@@ -214,7 +217,7 @@ def _valid_signature(req):
 
 @app.route("/", methods=["GET"])
 def health():
-  return "ok", 200
+  return f"ok | store: {store.storage_mode()}", 200
 
 
 @app.route("/webhook", methods=["GET", "POST"])
@@ -253,6 +256,20 @@ def webhook():
   return "EVENT_RECEIVED", 200
 
 
+@app.route("/tgstatus", methods=["GET"])
+def tg_status():
+  """Why is Telegram not replying? Open this URL in a browser."""
+  info = tg.api("getWebhookInfo").get("result") or {}
+  return {
+      "token_set": bool(os.getenv("TELEGRAM_BOT_TOKEN", "").strip()),
+      "webhook_set": bool(info.get("url")),
+      "webhook_is_this_server": (info.get("url") or "").endswith("/telegram"),
+      "pending_updates": info.get("pending_update_count"),
+      "last_error": info.get("last_error_message"),
+      "store": store.storage_mode(),
+  }, 200
+
+
 @app.route("/telegram", methods=["POST"])
 def telegram_webhook():
   secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
@@ -269,6 +286,10 @@ def telegram_webhook():
 
 def startup():
   """Registers webhooks/menus once when the server boots (best effort)."""
+  print(f"[setup] Storage: {store.storage_mode()}")
+  if not store.is_shared_store():
+    print("[WARN] No Upstash set: user choices are lost on restart/sleep, "
+          "so people get asked to choose again.")
   try:
     base = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL")
             or "").strip()

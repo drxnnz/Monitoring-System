@@ -104,7 +104,46 @@ def item_html(item):
 
 def send_item(chat_id, item):
   """Used by the monitor and the bot. True / False / 'blocked'."""
-  return _send(chat_id, item_html(item), item_markup(item), item.get("image"))
+  res = _send(chat_id, item_html(item), item_markup(item), item.get("image"))
+  if res is True:
+    _remember_alert(chat_id, item)
+  return res
+
+
+def _remember_alert(chat_id, item):
+  """So a plain "worth it ba?" right after an alert knows which game."""
+  deal_id = (item.get("meta") or {}).get("deal_id")
+  if item.get("kind") != "game" or not deal_id:
+    return
+  try:
+    user = store.get_user(uid(chat_id))
+    user["last_game_deal"] = deal_id
+    store.save_user(user)
+  except Exception as e:  # never break delivery because of this
+    print(f"[WARN] could not remember alert for {chat_id}: {e}")
+
+
+def reply_context(reply):
+  """What alert is the person replying to? Works with the bot's own messages
+  (the 'Worth it ba?' button's deal id, or the title in the text/caption)."""
+  if not reply:
+    return None
+  ctx = {"deal_id": None, "title": None, "free": False, "text": ""}
+  kb = (reply.get("reply_markup") or {}).get("inline_keyboard") or []
+  for row in kb:
+    for btn in row:
+      data = btn.get("callback_data") or ""
+      if data.startswith("WORTH|"):
+        ctx["deal_id"] = data.split("|", 1)[1]
+  text = reply.get("text") or reply.get("caption") or ""
+  ctx["text"] = text
+  lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
+  if len(lines) >= 2:
+    ctx["title"] = lines[1]
+    ctx["free"] = "FREE" in lines[0].upper()
+  if not (ctx["deal_id"] or ctx["title"]):
+    return None
+  return ctx
 
 
 # ---------- conversation ----------
@@ -199,10 +238,40 @@ def answer_worth(chat_id, user, snap):
   store.save_user(user)
 
 
-def handle_worth_text(chat_id, user, text):
+def answer_free(chat_id, ctx):
+  """'Worth it ba?' on a free-to-keep alert."""
+  title = ctx["title"] or "Larong to"
+  out = [f"🆓 {title}", "",
+         "Libre siya ngayon at keep forever, kaya wala kang mawawala "
+         "basta ma-claim mo bago mag-deadline."]
+  for ln in ctx["text"].split("\n"):
+    if "Claim hanggang" in ln:
+      out.append(ln.strip())
+  try:  # best effort: Steam reviews if the same game is on CheapShark
+    snap = deals.snapshot_from_title(title)
+  except Exception:
+    snap = None
+  if (snap and snap.get("rating_pct") is not None
+      and snap["title"].lower().strip() == title.lower().strip()):
+    out.append(f"⭐ Sa Steam: {snap['rating_pct']}% positive "
+               f"({snap['rating_count']:,} reviews)")
+  out += ["", "Check mo na lang kung gusto mo yung genre 😅"]
+  return say(chat_id, esc("\n".join(out)), menu_markup())
+
+
+def handle_worth_text(chat_id, user, text, ctx=None):
   title = extract_game_title(text)
   if title:
     return answer_worth(chat_id, user, deals.snapshot_from_title(title))
+  if ctx:  # replying to an alert: that's the game they mean
+    if ctx["deal_id"]:
+      return answer_worth(chat_id, user,
+                          deals.snapshot_from_deal_id(ctx["deal_id"]))
+    if ctx["free"]:
+      return answer_free(chat_id, ctx)
+    if ctx["title"]:
+      return answer_worth(chat_id, user,
+                          deals.snapshot_from_title(ctx["title"]))
   if user.get("last_game_deal"):
     return answer_worth(chat_id, user,
                         deals.snapshot_from_deal_id(user["last_game_deal"]))
@@ -249,10 +318,11 @@ def handle_action(chat_id, data, message_id=None):
     return stop(chat_id, user)
 
 
-def handle_text(chat_id, text, private=True):
+def handle_text(chat_id, text, private=True, reply=None):
   user = store.get_user(uid(chat_id))
   raw = (text or "").strip()
   low = raw.lower()
+  ctx = reply_context(reply)
   if not low:
     return
 
@@ -266,6 +336,8 @@ def handle_text(chat_id, text, private=True):
       return say(chat_id, "Hi! Gamitin mo ako dito: /worth &lt;game&gt;, "
                  "/updates, /free. Para sa personal na updates, i-message "
                  "mo ako nang private 🙂", menu_markup())
+    if cmd == "/ping":
+      return say(chat_id, "Gising ako ✅")
     if cmd == "/help":
       return say(chat_id, HELP, menu_markup())
     if cmd == "/updates":
@@ -279,15 +351,14 @@ def handle_text(chat_id, text, private=True):
     if cmd == "/stop":
       return stop(chat_id, user)
     if cmd == "/worth":
-      return handle_worth_text(chat_id, user, args or "worth it")
+      return handle_worth_text(chat_id, user, args or "worth it", ctx)
     return say(chat_id, HELP, menu_markup())
 
-  if private and not user["onboarded"]:
-    return welcome(chat_id, user)
+  new = private and not user["onboarded"] and not user["prefs"]
   if has_word(low, ["stop", "unsubscribe", "tigil"]):
     return stop(chat_id, user)
   if any(p in low for p in WORTH_PHRASES):
-    return handle_worth_text(chat_id, user, raw)
+    return handle_worth_text(chat_id, user, raw, ctx)
   if has_word(low, ["settings", "setting", "preferences", "menu", "pili"]):
     return send_prefs(chat_id, user, "⚙️ Settings") if private else None
   if has_word(low, ["free", "libre", "epic"]):
@@ -295,7 +366,11 @@ def handle_text(chat_id, text, private=True):
   if has_word(low, ["update", "updates", "balita", "bago", "latest", "news"]):
     return show_updates(chat_id, user)
   if has_word(low, ["hi", "hello", "hey", "yo", "kumusta", "musta"]):
+    if new:
+      return welcome(chat_id, user)
     return say(chat_id, "Uy! Ano kailangan mo ngayon?", menu_markup())
+  if new:
+    return welcome(chat_id, user)
   if private:
     return say(chat_id, "Di ko pa gets yan 😅 Subukan: “worth it ba ang "
                "<game>?” o pindutin ang options sa baba.".replace(
@@ -317,7 +392,9 @@ def handle_update(update):
   chat = msg.get("chat") or {}
   if chat.get("id") is None or msg.get("from", {}).get("is_bot"):
     return
-  handle_text(chat["id"], msg.get("text"), private=chat.get("type") == "private")
+  handle_text(chat["id"], msg.get("text"),
+              private=chat.get("type") == "private",
+              reply=msg.get("reply_to_message"))
 
 
 # ---------- one-time setup (runs at server start) ----------
