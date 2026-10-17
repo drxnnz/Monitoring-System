@@ -1,4 +1,3 @@
-
 name: Free Monitor
 
 on:
@@ -36,6 +35,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Idinagdag natin ito para magamit sa monitor.py
+          PAGE_ACCESS_TOKEN: ${{ secrets.PAGE_ACCESS_TOKEN }}
+          ADMIN_PSID: ${{ secrets.ADMIN_PSID }}
         run: python monitor.py
 
       - name: Save deduplication state
