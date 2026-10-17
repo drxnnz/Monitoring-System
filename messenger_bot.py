@@ -40,18 +40,25 @@ def webhook():
 
 
 def handle_message(recipient_id, message_text):
-  # Dito natin ginawang mas natural ang reply
   text_lower = message_text.lower()
 
+  # Ibinabalik natin sa tamang purpose: Updates at info hub
   if "hi" in text_lower or "hello" in text_lower or "kumusta" in text_lower:
     response_text = (
-        "Uy, hello! Nakuha ko 'yung mensahe mo. Ano ba ang maitutulong ko"
-        " ngayon? 😎"
+        "Yo! Active na ang updates channel na ito. Pwede kang mag-abang dito"
+        " ng mga bagong tech drops, deals, at iba pang useful updates. Ano"
+        " ang hanap mo ngayon? 🚀"
+    )
+  elif "update" in text_lower or "balita" in text_lower:
+    response_text = (
+        "Sa ngayon, naka-standby pa ang automated scrapers natin. Pero"
+        " malapit na nating i-integrate 'yan para diretso rito ang mga"
+        " bagong balita at updates!"
     )
   else:
     response_text = (
-        f"Nasa-save ko na sinabi mo: \"{message_text}\". Sandali lang, "
-        "inaayos ko pa 'yung iba pang features nito!"
+        f"Natanggap ko 'yung '{{message_text}}'. Naka-note na 'yan sa sistema"
+        " natin para sa susunod na batch ng updates!"
     )
 
   payload = {
