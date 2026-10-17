@@ -1,0 +1,7 @@
+{
+  "_help": "Dagdag ng RSS/Atom feed URLs dito (hal. BulSU website feed, o RSS na galing sa rss.app/FetchRSS para sa public Facebook page). Walang url = skipped.",
+  "feeds": [
+    {"name": "BulSU Main Campus", "url": "", "kind": "memo", "max_age_days": 3},
+    {"name": "Malolos LGU", "url": "", "kind": "local", "max_age_days": 2}
+  ]
+}

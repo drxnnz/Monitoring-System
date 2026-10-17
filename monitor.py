@@ -1,12 +1,19 @@
+import calendar
 from datetime import datetime, timedelta, timezone
 import hashlib
 import html
 import json
 import os
 import re
+import time
 from urllib.parse import quote_plus, urlparse
 import feedparser
 import requests
+
+import deals
+import messenger
+import store
+from config import KIND_PREF, MAX_PUSH_PER_USER, WINDOW_SECONDS
 
 PHT = timezone(timedelta(hours=8))
 STATE_PATH = "state.json"
@@ -18,7 +25,7 @@ GH_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN", "").strip()
 ADMIN_PSID = os.getenv("ADMIN_PSID", "").strip()
 
-USER_AGENT = "FreeMonitor/1.0 (personal project; contact: configure-in-repo)"
+USER_AGENT = "FreeMonitor/2.0 (personal project; contact: configure-in-repo)"
 TIMEOUT = 18
 MAX_ITEMS_PER_RUN = 12
 
@@ -104,22 +111,30 @@ def fetch_cheapshark():
         continue
       if d.get("isOnSale") != "1":
         continue
-      title = d.get("title", "Unknown game")
       deal_id = d.get("dealID")
       if not deal_id:
         continue
-      url = f"https://www.cheapshark.com/redirect?dealID={quote_plus(deal_id)}"
-      store_id = "Steam"
+
+      def build(rate, d=d, deal_id=deal_id):
+        # Runs only for unseen deals, so the price-history call is not
+        # wasted on items we already sent.
+        snap = deals.snapshot_from_list_deal(d)
+        return {
+            "title": snap["title"],
+            "lines": deals.game_lines(snap, rate),
+            "image": deals.steam_image(snap["app_id"], snap["thumb"]),
+        }
+
       found.append({
           "id": "game:" + stable_id(deal_id),
+          "kind": "game",
           "category": "🎮 GAME DEAL",
-          "title": title,
-          "body": (
-              f"Store ID {store_id} · ${original:.2f} → ${current:.2f} USD ·"
-              f" {savings:.1f}% off · Steam rating:"
-              f" {d.get('steamRatingText') or 'not listed'}"
-          ),
-          "url": url,
+          "title": d.get("title", "Unknown game"),
+          "lines": [],
+          "url": deals.redirect_url(deal_id),
+          "image": None,
+          "meta": {"deal_id": deal_id},
+          "_build": build,
       })
     except Exception:
       continue
@@ -145,6 +160,11 @@ def fetch_epic_free_games():
       active = []
       for group in offers:
         for offer in group.get("promotionalOffers", []):
+          # Epic encodes "100% off" as discountPercentage == 0. Skip partial
+          # discounts so we only report truly free-to-keep games.
+          pct = (offer.get("discountSetting") or {}).get("discountPercentage")
+          if pct is not None and pct != 0:
+            continue
           start = parse_date(offer.get("startDate"))
           end = parse_date(offer.get("endDate"))
           if end and end.astimezone(timezone.utc) < now:
@@ -166,17 +186,38 @@ def fetch_epic_free_games():
       )
       end = active[0][1]
       deadline = (
-          end.strftime("%b %d, %Y %H:%M PHT") if end else "deadline not listed"
+          end.strftime("%b %d, %Y %I:%M %p PHT") if end else "deadline not listed"
       )
+      orig = (
+          ((game.get("price") or {}).get("totalPrice") or {}).get("fmtPrice")
+          or {}
+      ).get("originalPrice")
+      image = None
+      for wanted in ("OfferImageWide", "DieselStoreFrontWide", "Thumbnail"):
+        for img in game.get("keyImages") or []:
+          if img.get("type") == wanted and img.get("url"):
+            image = img["url"]
+            break
+        if image:
+          break
+      lines = []
+      if orig:
+        lines.append(f"🏷️ Dati: {orig} → ✅ LIBRE (keep forever)")
+      else:
+        lines.append("✅ LIBRE, keep forever")
+      lines.append(f"⏰ Claim hanggang: {deadline}")
+      desc = (game.get("description") or "").strip()
+      if desc:
+        lines.append(f"📝 {desc[:110]}{'…' if len(desc) > 110 else ''}")
       found.append({
           "id": "epic:" + stable_id(title + str(end)),
+          "kind": "free",
           "category": "🆓 EPIC FREE-TO-KEEP",
           "title": title,
-          "body": (
-              "Claim free and keep permanently · Claim window ends:"
-              f" {deadline}"
-          ),
+          "lines": lines,
           "url": link,
+          "image": image,
+          "meta": {},
       })
     except Exception:
       continue
@@ -208,19 +249,19 @@ def fetch_github_projects():
         full_name = repo["full_name"]
         stars = repo.get("stargazers_count", 0)
         desc = repo.get("description") or "No description provided."
-        created = repo.get("created_at", "")[:10]
+        lic = (repo.get("license") or {}).get("spdx_id") or "no license"
         found.append({
             "id": "ghrepo:" + stable_id(full_name),
+            "kind": "github",
             "category": "🧩 NEW GITHUB PROJECT",
             "title": full_name,
-            "body": (
-                f"{desc[:220]} · ⭐ {stars:,} stars · created {created} ·"
-                " "
-                f"{repo.get('license', {}).get('spdx_id') if repo.get('license') else 'license not detected'}"
-            ),
-            "url": repo.get(
-                "html_url", f"https://github.com/{full_name}"
-            ),
+            "lines": [
+                desc[:160],
+                f"⭐ {stars:,} · {repo.get('language') or 'n/a'} · {lic}",
+            ],
+            "url": repo.get("html_url", f"https://github.com/{full_name}"),
+            "image": f"https://opengraph.githubassets.com/1/{full_name}",
+            "meta": {},
         })
       except Exception:
         continue
@@ -247,14 +288,16 @@ def fetch_github_projects():
     tag = data.get("tag_name")
     found.append({
         "id": "ghrelease:" + stable_id(name + ":" + tag),
+        "kind": "github",
         "category": "🚀 GITHUB RELEASE",
         "title": f"{name} · {tag}",
-        "body": (
-            data.get("name")
-            or data.get("body")
-            or "New release published today."
-        ).strip()[:220],
+        "lines": [
+            (data.get("name") or data.get("body") or "New release today.")
+            .strip()[:160]
+        ],
         "url": data.get("html_url", f"https://github.com/{name}/releases"),
+        "image": f"https://opengraph.githubassets.com/1/{name}",
+        "meta": {},
     })
   return found
 
@@ -293,6 +336,11 @@ def officialish_domain(link):
     return False
 
 
+def clean_text(s):
+  s = re.sub(r"<[^>]+>", " ", s or "")
+  return re.sub(r"\s+", " ", html.unescape(s)).strip()
+
+
 def fetch_local_alerts():
   found = []
   queries = [
@@ -303,18 +351,21 @@ def fetch_local_alerts():
       "Malolos Bulacan flooding alert",
   ]
   cutoff = now_pht() - timedelta(hours=30)
+  keywords = [
+      "suspend", "walang pasok", "class cancellation", "flood", "flooding",
+      "typhoon", "tropical cyclone", "rainfall warning", "heavy rain",
+      "severe weather", "signal no.", "storm signal", "disaster alert",
+  ]
   for query in queries:
     for entry in google_news_rss(query)[:12]:
       try:
         title = entry.get("title", "").strip()
         link = entry.get("link", "")
-        publisher_url = (entry.get("source") or {}).get("href", "") or link
-        summary = re.sub(r"<[^>]+>", " ", entry.get("summary", ""))
-        summary = re.sub(r"\s+", " ", html.unescape(summary)).strip()
+        src = entry.get("source") or {}
+        publisher_url = src.get("href", "") or link
+        summary = clean_text(entry.get("summary", ""))
         published = None
         if entry.get("published_parsed"):
-          import calendar
-
           published = datetime.fromtimestamp(
               calendar.timegm(entry.published_parsed), timezone.utc
           ).astimezone(PHT)
@@ -327,35 +378,24 @@ def fetch_local_alerts():
         if not officialish_domain(publisher_url):
           continue
         low = (title + " " + summary).lower()
-        relevant = any(
-            k in low
-            for k in [
-                "suspend",
-                "walang pasok",
-                "class cancellation",
-                "flood",
-                "flooding",
-                "typhoon",
-                "tropical cyclone",
-                "rainfall warning",
-                "heavy rain",
-                "severe weather",
-                "signal no.",
-                "storm signal",
-                "disaster alert",
-            ]
-        )
-        if not relevant:
+        if not any(k in low for k in keywords):
           continue
+        lines = []
+        if summary and summary.lower() != title.lower():
+          lines.append(summary[:200])
+        lines.append(
+            f"🗞️ {src.get('title') or urlparse(publisher_url).hostname}"
+            f" · {published.strftime('%b %d, %I:%M %p')}"
+        )
         found.append({
             "id": "local:" + stable_id(link + title),
+            "kind": "local",
             "category": "📢 LOCAL / WEATHER ALERT",
-            "title": title[:180],
-            "body": (
-                summary
-                or "Open the linked source for the announcement details."
-            )[:260],
+            "title": title[:150],
+            "lines": lines,
             "url": link,
+            "image": None,
+            "meta": {},
         })
       except Exception:
         continue
@@ -365,23 +405,145 @@ def fetch_local_alerts():
   return list(unique.values())[:8]
 
 
-def telegram_send(message):
+# ---------- curated feeds (BulSU memos, LGU pages, rss.app feeds, ...) ----------
+
+OG_RE = [
+    re.compile(r'<meta[^>]+property=["\']og:image["\'][^>]*content=["\']([^"\']+)', re.I),
+    re.compile(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]*property=["\']og:image["\']', re.I),
+]
+IMG_RE = re.compile(r'<img[^>]+src=["\']([^"\']+)', re.I)
+
+
+def og_image(page_url):
+  try:
+    r = SESSION.get(page_url, timeout=TIMEOUT)
+    r.raise_for_status()
+    for rx in OG_RE:
+      m = rx.search(r.text[:200000])
+      if m:
+        return html.unescape(m.group(1))
+  except Exception as e:
+    print(f"[WARN] og:image fetch failed for {page_url}: {e}")
+  return None
+
+
+def entry_image(entry):
+  for key in ("media_content", "media_thumbnail"):
+    for m in entry.get(key) or []:
+      if m.get("url"):
+        return m["url"]
+  for enc in entry.get("enclosures") or []:
+    if str(enc.get("type", "")).startswith("image") and enc.get("href"):
+      return enc["href"]
+  blobs = [entry.get("summary", "")] + [
+      c.get("value", "") for c in entry.get("content") or []
+  ]
+  for b in blobs:
+    m = IMG_RE.search(b or "")
+    if m:
+      return html.unescape(m.group(1))
+  return None
+
+
+def load_sources():
+  try:
+    with open("sources.json", "r", encoding="utf-8") as f:
+      return json.load(f).get("feeds", [])
+  except Exception:
+    return []
+
+
+def fetch_extra_feeds():
+  found = []
+  for feed in load_sources():
+    url = (feed.get("url") or "").strip()
+    if not url:
+      continue
+    kind = feed.get("kind", "memo")
+    label = {"memo": "📌 MEMO / ANNOUNCEMENT"}.get(kind, "📢 LOCAL UPDATE")
+    cutoff = now_pht() - timedelta(days=int(feed.get("max_age_days", 3)))
+    try:
+      r = SESSION.get(url, timeout=TIMEOUT)
+      r.raise_for_status()
+      entries = feedparser.parse(r.content).entries
+    except Exception as e:
+      print(f"[WARN] Feed failed {url}: {e}")
+      continue
+    for entry in entries[:10]:
+      try:
+        link = entry.get("link", "")
+        title = clean_text(entry.get("title", ""))[:150]
+        if not link or not title:
+          continue
+        ts = entry.get("published_parsed") or entry.get("updated_parsed")
+        if ts:
+          published = datetime.fromtimestamp(
+              calendar.timegm(ts), timezone.utc).astimezone(PHT)
+          if published < cutoff:
+            continue
+        else:
+          published = None
+        summary = clean_text(entry.get("summary", ""))
+        lines = []
+        if summary and summary.lower() != title.lower():
+          lines.append(summary[:220])
+        stamp = published.strftime("%b %d, %I:%M %p") if published else ""
+        lines.append(f"📍 {feed.get('name', 'Feed')} {('· ' + stamp) if stamp else ''}".strip())
+        image = entry_image(entry)
+
+        def build(rate, link=link, image=image):
+          return {"image": image or og_image(link)}
+
+        found.append({
+            "id": "feed:" + stable_id(link),
+            "kind": kind,
+            "category": label,
+            "title": title,
+            "lines": lines,
+            "url": link,
+            "image": image,
+            "meta": {},
+            "_build": build,
+        })
+      except Exception:
+        continue
+    time.sleep(0.5)
+  return found[:10]
+
+
+# ---------- delivery ----------
+
+
+def telegram_send_item(item):
+  """True = sent, False = failed (retry next run), None = not configured."""
   if not TOKEN or not CHAT_ID:
-    print(
-        "[WARN] Telegram secrets are missing; report will only appear in"
-        " workflow logs."
-    )
-    return False
-  url = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+    print("[WARN] Telegram secrets missing; item only appears in logs.")
+    return None
+  caption = (
+      f"{esc(item.get('category', ''))}\n<b>{esc(item['title'])}</b>\n"
+      + "\n".join(esc(x) for x in item.get("lines", []))
+  )
+  if item.get("url"):
+    caption += f'\n<a href="{html.escape(item["url"], quote=True)}">🔗 Buksan</a>'
+  base = f"https://api.telegram.org/bot{TOKEN}"
+  if item.get("image") and len(caption) <= 1000:
+    try:
+      r = SESSION.post(
+          f"{base}/sendPhoto",
+          data={"chat_id": CHAT_ID, "photo": item["image"],
+                "caption": caption, "parse_mode": "HTML"},
+          timeout=TIMEOUT,
+      )
+      if r.status_code < 400:
+        return True
+      print(f"[WARN] sendPhoto failed ({r.status_code}); sending text instead.")
+    except Exception as e:
+      print(f"[WARN] sendPhoto error: {e}")
   try:
     r = SESSION.post(
-        url,
-        data={
-            "chat_id": CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        },
+        f"{base}/sendMessage",
+        data={"chat_id": CHAT_ID, "text": caption[:4000], "parse_mode": "HTML",
+              "disable_web_page_preview": False if item.get("image") else True},
         timeout=TIMEOUT,
     )
     r.raise_for_status()
@@ -391,47 +553,50 @@ def telegram_send(message):
     return False
 
 
-def strip_html(text):
-  """Remove simple HTML tags so Messenger gets clean plain text."""
-  text = re.sub(r"<[^>]+>", "", text)
-  return html.unescape(text).strip()
-
-
-def facebook_messenger_send(message):
-  if not PAGE_ACCESS_TOKEN or not ADMIN_PSID:
-    print(
-        "[WARN] Facebook Messenger secrets (PAGE_ACCESS_TOKEN or ADMIN_PSID)"
-        " are missing. Skip Messenger send."
-    )
-    return False
-
-  # Messenger does not support HTML — send plain text only.
-  # Hard limit is ~2000 chars; stay safely under it.
-  plain = strip_html(message)
-  if len(plain) > 1900:
-    plain = plain[:1850] + "\n\n... (truncated, see Telegram/GitHub for full)"
-
-  url = (
-      "https://graph.facebook.com/v18.0/me/messages"
-      f"?access_token={PAGE_ACCESS_TOKEN}"
-  )
-  payload = {
-      "recipient": {"id": ADMIN_PSID},
-      "message": {"text": plain},
-      "messaging_type": "UPDATE",
-  }
-  headers = {"Content-Type": "application/json"}
+def audience():
+  """Subscribers from the store, plus the legacy ADMIN_PSID if set."""
+  users = []
   try:
-    r = SESSION.post(url, json=payload, headers=headers, timeout=TIMEOUT)
-    if r.status_code >= 400:
-      # Log the actual Facebook error body so we can debug token/PSID issues
-      print(f"[ERROR] Facebook Messenger HTTP {r.status_code}: {r.text}")
-      return False
-    print("Naipadala na ang alert sa Facebook Messenger!")
-    return True
+    users = store.all_users()
   except Exception as e:
-    print(f"[ERROR] Facebook Messenger send failed: {e}")
-    return False
+    print(f"[WARN] Could not load subscribers: {e}")
+  admin = os.getenv("ADMIN_PSID", "").strip()
+  if admin and all(u["psid"] != admin for u in users):
+    u = store.get_user(admin)
+    if not u["prefs"]:
+      u["prefs"] = list(KIND_PREF.values())
+    users.append(u)
+  return users
+
+
+def push_messenger(items):
+  if not os.getenv("PAGE_ACCESS_TOKEN", "").strip():
+    print("[WARN] PAGE_ACCESS_TOKEN missing; skipping Messenger.")
+    return
+  for item in items:
+    store.push_recent(item)
+  now = time.time()
+  for user in audience():
+    mine = [i for i in items if KIND_PREF.get(i["kind"]) in user["prefs"]]
+    if not mine:
+      continue
+    psid = user["psid"]
+    in_window = now - float(user.get("last_msg") or 0) < WINDOW_SECONDS
+    sent = 0
+    blocked = not in_window
+    for item in mine:
+      if not blocked and sent < MAX_PUSH_PER_USER:
+        status = messenger.send_item(psid, item, messaging_type="UPDATE")
+        if status == "ok":
+          sent += 1
+          continue
+        blocked = status == "window" or blocked
+      store.queue_pending(psid, item)
+    left = len(mine) - sent
+    if sent and left > 0:
+      messenger.send_text(
+          psid, f"May {left} pa na naka-queue. I-type ang “update” para makuha.",
+          messaging_type="UPDATE")
 
 
 def main():
@@ -442,6 +607,7 @@ def main():
       fetch_epic_free_games,
       fetch_github_projects,
       fetch_local_alerts,
+      fetch_extra_feeds,
   ):
     try:
       all_items.extend(fetcher())
@@ -449,40 +615,41 @@ def main():
       print(f"[WARN] {fetcher.__name__} failed: {e}")
 
   fresh = []
+  ids = set()
   for item in all_items:
-    if item["id"] not in seen:
+    if item["id"] not in seen and item["id"] not in ids:
       fresh.append(item)
-      seen.add(item["id"])
-
-  save_state(seen)
-  fresh = fresh[:MAX_ITEMS_PER_RUN]
+      ids.add(item["id"])
+  fresh = fresh[:MAX_ITEMS_PER_RUN]  # the rest stay unseen -> next run
 
   if not fresh:
     print(f"No new qualifying items at {now_pht().isoformat()}")
     return
 
-  lines = [
-      f"🔎 FREE MONITOR · {now_pht().strftime('%d %b %Y, %I:%M %p PHT')}"
-  ]
-  current_category = None
+  rate = deals.php_rate()
   for item in fresh:
-    if item["category"] != current_category:
-      current_category = item["category"]
-      lines.append("")
-      lines.append(current_category)
-    lines.append(f"\n<b>{esc(item['title'])}</b>")
-    lines.append(esc(item["body"]))
-    lines.append(esc(item["url"]))
-  message = "\n".join(lines)
-  if len(message) > 3900:
-    message = (
-        message[:3850]
-        + "\n\nMore findings may be available in the GitHub Actions log."
-    )
+    build = item.pop("_build", None)
+    if build:
+      try:
+        item.update(build(rate))
+      except Exception as e:
+        print(f"[WARN] Could not enrich {item['id']}: {e}")
 
-  # I-send sa Telegram at Facebook Messenger nang sabay
-  telegram_send(message)
-  facebook_messenger_send(message)
+  # Telegram first. Items that failed there are NOT marked seen, so they are
+  # retried next run instead of being lost.
+  delivered = []
+  for item in fresh:
+    ok = telegram_send_item(item)
+    time.sleep(0.4)
+    if ok is not False:
+      delivered.append(item)
+
+  if delivered:
+    push_messenger(delivered)
+  for item in delivered:
+    seen.add(item["id"])
+  save_state(seen)
+  print(f"Delivered {len(delivered)}/{len(fresh)} new items.")
 
 
 if __name__ == "__main__":
