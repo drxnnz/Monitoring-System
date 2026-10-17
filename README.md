@@ -13,7 +13,11 @@ Tuloy pa rin ang GitHub Actions monitor (every ~15 min), pero may **Messenger bo
 ## Setup
 
 ### 1. Telegram (reliable push, walang 24h limit)
-Same as before: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` sa GitHub Secrets.
+- GitHub Secrets: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` (group/channel na pinag-bro-broadcast, optional na).
+- **Telegram bot na sumasagot sa kahit sino**: ilagay din ang `TELEGRAM_BOT_TOKEN` sa **Render env vars**. Kusang magre-register ng webhook (`/telegram`) ang server pag nag-start, gamit ang `RENDER_EXTERNAL_URL` na nilalagay mismo ng Render. Optional: `TELEGRAM_WEBHOOK_SECRET` (random letters/numbers) para sigurado na Telegram lang ang makakatawag.
+- Commands: `/start`, `/updates`, `/free`, `/worth <game>`, `/settings`, `/stop`. Pwede rin i-type lang: "worth it ba ang Hades?"
+- Sa group: naka-on ang privacy mode ng bots, kaya commands (`/worth Hades`) at mga buttons lang ang nakikita niya. Para mabasa ang normal na chat, BotFather → `/setprivacy` → Disable.
+- Kailangan ang Upstash (step 2) para maalala ng bot ang pinili ng bawat user.
 
 ### 2. Upstash Redis (free) — para magkasama ang bot at monitor
 1. Gumawa ng free database sa upstash.com.
@@ -34,7 +38,7 @@ GitHub Actions **hindi** makakapag-host ng webhook. Kailangan ng web service (ha
 5. Run once: `PAGE_ACCESS_TOKEN=... python setup_messenger.py` (Get Started button + menu).
 
 ### 5. Actions secrets
-`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PAGE_ACCESS_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. (`ADMIN_PSID` optional na lang.)
+`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PAGE_ACCESS_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. (`ADMIN_PSID` optional na lang. Optional din: `KEEPALIVE_URL` = URL ng Render service mo, para ma-ping ng monitor at hindi masyadong natutulog.)
 
 ## BulSU memos na may picture
 

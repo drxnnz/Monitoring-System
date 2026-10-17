@@ -13,6 +13,7 @@ import requests
 import deals
 import messenger
 import store
+import tg
 from config import KIND_PREF, MAX_PUSH_PER_USER, WINDOW_SECONDS
 
 PHT = timezone(timedelta(hours=8))
@@ -514,43 +515,31 @@ def fetch_extra_feeds():
 # ---------- delivery ----------
 
 
-def telegram_send_item(item):
-  """True = sent, False = failed (retry next run), None = not configured."""
+def telegram_broadcast(item):
+  """Group/channel/chat in TELEGRAM_CHAT_ID.
+  True = sent, False = failed (retry next run), None = not configured."""
   if not TOKEN or not CHAT_ID:
-    print("[WARN] Telegram secrets missing; item only appears in logs.")
+    print("[WARN] TELEGRAM_CHAT_ID/TOKEN missing; no Telegram broadcast.")
     return None
-  caption = (
-      f"{esc(item.get('category', ''))}\n<b>{esc(item['title'])}</b>\n"
-      + "\n".join(esc(x) for x in item.get("lines", []))
-  )
-  if item.get("url"):
-    caption += f'\n<a href="{html.escape(item["url"], quote=True)}">🔗 Buksan</a>'
-  base = f"https://api.telegram.org/bot{TOKEN}"
-  if item.get("image") and len(caption) <= 1000:
-    try:
-      r = SESSION.post(
-          f"{base}/sendPhoto",
-          data={"chat_id": CHAT_ID, "photo": item["image"],
-                "caption": caption, "parse_mode": "HTML"},
-          timeout=TIMEOUT,
-      )
-      if r.status_code < 400:
-        return True
-      print(f"[WARN] sendPhoto failed ({r.status_code}); sending text instead.")
-    except Exception as e:
-      print(f"[WARN] sendPhoto error: {e}")
-  try:
-    r = SESSION.post(
-        f"{base}/sendMessage",
-        data={"chat_id": CHAT_ID, "text": caption[:4000], "parse_mode": "HTML",
-              "disable_web_page_preview": False if item.get("image") else True},
-        timeout=TIMEOUT,
-    )
-    r.raise_for_status()
-    return True
-  except Exception as e:
-    print(f"[ERROR] Telegram send failed: {e}")
-    return False
+  return tg.send_item(CHAT_ID, item) is True
+
+
+def push_telegram(items):
+  """Everyone who chatted with the bot and picked their updates."""
+  if not TOKEN:
+    return
+  for user in audience():
+    if not user["psid"].startswith("tg:"):
+      continue
+    chat_id = user["psid"][3:]
+    mine = [i for i in items if KIND_PREF.get(i["kind"]) in user["prefs"]]
+    for item in mine:
+      status = tg.send_item(chat_id, item)
+      time.sleep(0.1)
+      if status == "blocked":  # user blocked the bot
+        user["prefs"] = []
+        store.save_user(user)
+        break
 
 
 def audience():
@@ -573,10 +562,10 @@ def push_messenger(items):
   if not os.getenv("PAGE_ACCESS_TOKEN", "").strip():
     print("[WARN] PAGE_ACCESS_TOKEN missing; skipping Messenger.")
     return
-  for item in items:
-    store.push_recent(item)
   now = time.time()
   for user in audience():
+    if user["psid"].startswith("tg:"):
+      continue
     mine = [i for i in items if KIND_PREF.get(i["kind"]) in user["prefs"]]
     if not mine:
       continue
@@ -599,7 +588,18 @@ def push_messenger(items):
           messaging_type="UPDATE")
 
 
+def keep_awake():
+  """Optional: ping the free Render service so it sleeps less."""
+  url = os.getenv("KEEPALIVE_URL", "").strip()
+  if url:
+    try:
+      SESSION.get(url, timeout=60)
+    except Exception as e:
+      print(f"[WARN] keepalive failed: {e}")
+
+
 def main():
+  keep_awake()
   seen = load_state()
   all_items = []
   for fetcher in (
@@ -639,12 +639,18 @@ def main():
   # retried next run instead of being lost.
   delivered = []
   for item in fresh:
-    ok = telegram_send_item(item)
+    ok = telegram_broadcast(item)
     time.sleep(0.4)
     if ok is not False:
       delivered.append(item)
 
   if delivered:
+    try:
+      for item in delivered:
+        store.push_recent(item)  # powers "Ano bago?" in both bots
+    except Exception as e:
+      print(f"[WARN] Could not save recent items: {e}")
+    push_telegram(delivered)
     push_messenger(delivered)
   for item in delivered:
     seen.add(item["id"])

@@ -2,8 +2,6 @@
 import hashlib
 import hmac
 import os
-import re
-import time
 from collections import deque
 
 from flask import Flask, request
@@ -11,38 +9,13 @@ from flask import Flask, request
 import deals
 import messenger
 import store
+import tg
 from config import KIND_PREF, PREFS
+from nlu import WORTH_PHRASES, extract_game_title, has_word
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 _seen_mids = deque(maxlen=500)
-
-WORTH_PHRASES = [
-    "worth it", "worth", "sulit", "okay ba", "ok ba", "maganda ba",
-    "bilhin ba", "bili ba", "pasok ba", "recommend", "ganda ba",
-]
-STOPWORDS = {
-    "ba", "ang", "yung", "yong", "nung", "na", "po", "ito", "to", "sa", "ng",
-    "mga", "is", "the", "a", "bang", "kaya", "naman", "pa", "din", "rin",
-    "ngayon", "kung", "if", "may", "ko", "mo", "bilhin", "bumili", "buy",
-    "this", "that", "dis", "ba?", "it", "ay", "si", "ni", "para",
-}
-
-
-def has_word(text, words):
-  return any(re.search(rf"\b{re.escape(w)}\b", text) for w in words)
-
-
-def extract_game_title(text):
-  t = text.lower()
-  for p in sorted(WORTH_PHRASES, key=len, reverse=True):
-    t = t.replace(p, " ")
-  t = re.sub(r"[?!.,]", " ", t)
-  tokens = [w for w in t.split() if w not in STOPWORDS]
-  if tokens and tokens[0] in ("game", "laro"):
-    tokens = tokens[1:]
-  return " ".join(tokens).strip()
-
 
 # ---------- replies ----------
 
@@ -278,6 +251,43 @@ def webhook():
       except Exception as e:  # never let one bad event break the webhook
         print(f"[ERROR] handling event for {psid}: {e}")
   return "EVENT_RECEIVED", 200
+
+
+@app.route("/telegram", methods=["POST"])
+def telegram_webhook():
+  secret = os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip()
+  if secret and request.headers.get(
+      "X-Telegram-Bot-Api-Secret-Token", "") != secret:
+    return "Forbidden", 403
+  update = request.get_json(silent=True) or {}
+  try:
+    tg.handle_update(update)
+  except Exception as e:  # always 200 so Telegram doesn't retry forever
+    print(f"[ERROR] Telegram update failed: {e}")
+  return "ok", 200
+
+
+def startup():
+  """Registers webhooks/menus once when the server boots (best effort)."""
+  try:
+    base = (os.getenv("PUBLIC_URL") or os.getenv("RENDER_EXTERNAL_URL")
+            or "").strip()
+    if os.getenv("TELEGRAM_BOT_TOKEN", "").strip() and base:
+      res = tg.configure_webhook(
+          base, os.getenv("TELEGRAM_WEBHOOK_SECRET", "").strip() or None)
+      print(f"[setup] Telegram webhook -> {base}/telegram : {res}")
+    elif os.getenv("TELEGRAM_BOT_TOKEN", "").strip():
+      print("[setup] No PUBLIC_URL/RENDER_EXTERNAL_URL; Telegram webhook "
+            "not registered.")
+    if os.getenv("PAGE_ACCESS_TOKEN", "").strip():
+      messenger.configure_profile()
+  except Exception as e:
+    print(f"[WARN] startup setup failed: {e}")
+
+
+if os.getenv("RUN_STARTUP_SETUP", "1") == "1" and not os.getenv("PYTEST"):
+  import threading
+  threading.Thread(target=startup, daemon=True).start()
 
 
 if __name__ == "__main__":
