@@ -515,21 +515,13 @@ def fetch_extra_feeds():
 # ---------- delivery ----------
 
 
-def broadcast_ids():
-  """TELEGRAM_CHAT_ID may hold several IDs separated by commas."""
-  return [c.strip() for c in CHAT_ID.split(",") if c.strip()]
-
-
 def telegram_broadcast(item):
-  """Sends to every ID in TELEGRAM_CHAT_ID.
-  True = at least one sent, False = all failed (retry next run),
-  None = not configured."""
-  ids = broadcast_ids()
-  if not TOKEN or not ids:
+  """Group/channel/chat in TELEGRAM_CHAT_ID.
+  True = sent, False = failed (retry next run), None = not configured."""
+  if not TOKEN or not CHAT_ID:
     print("[WARN] TELEGRAM_CHAT_ID/TOKEN missing; no Telegram broadcast.")
     return None
-  results = [tg.send_item(c, item) is True for c in ids]
-  return any(results)
+  return tg.send_item(CHAT_ID, item) is True
 
 
 def push_telegram(items):
