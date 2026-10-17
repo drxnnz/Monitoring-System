@@ -4,14 +4,12 @@ import requests
 
 app = Flask(__name__)
 
-# Kukunin nito ang mga tokens mula sa environment variables (na galing sa GitHub/Render secrets)
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 
 
 @app.route("/webhook", methods=["GET", "POST"])
 def webhook():
-  # 1. Webhook Verification (Handshake ni Facebook)
   if request.method == "GET":
     mode = request.args.get("hub.mode")
     token = request.args.get("hub.verify_token")
@@ -25,7 +23,6 @@ def webhook():
         return "Verification failed", 403
     return "Hello world", 200
 
-  # 2. Pagdating ng Mensahe mula kay User
   elif request.method == "POST":
     data = request.json
     if data.get("object") == "page":
@@ -36,7 +33,6 @@ def webhook():
             message_text = messaging_event["message"].get("text")
 
             if message_text:
-              # Dito mo ikokonekta ang logic ng DiscoveryRadar bot mo
               handle_message(sender_id, message_text)
 
       return "EVENT_RECEIVED", 200
@@ -44,8 +40,19 @@ def webhook():
 
 
 def handle_message(recipient_id, message_text):
-  # Pansamantalang Echo reply muna para masigurong gumagana
-  response_text = f"Nakuha ko ang mensahe mo: '{message_text}'. Paparating na ang DiscoveryRadar updates mo!"
+  # Dito natin ginawang mas natural ang reply
+  text_lower = message_text.lower()
+
+  if "hi" in text_lower or "hello" in text_lower or "kumusta" in text_lower:
+    response_text = (
+        "Uy, hello! Nakuha ko 'yung mensahe mo. Ano ba ang maitutulong ko"
+        " ngayon? 😎"
+    )
+  else:
+    response_text = (
+        f"Nasa-save ko na sinabi mo: \"{message_text}\". Sandali lang, "
+        "inaayos ko pa 'yung iba pang features nito!"
+    )
 
   payload = {
       "recipient": {"id": recipient_id},
