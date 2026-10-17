@@ -534,12 +534,15 @@ def telegram_broadcast(item):
 
 def push_telegram(items):
   """Everyone who chatted with the bot and picked their updates."""
-  if not TOKEN:
-    return
+  if not TOKEN or tg.single_chat_mode():
+    return  # single-chat mode: the broadcast above is all that's sent
+  already = set(broadcast_ids())  # don't send the same alert twice
   for user in audience():
     if not user["psid"].startswith("tg:"):
       continue
     chat_id = user["psid"][3:]
+    if chat_id in already:
+      continue
     mine = [i for i in items if KIND_PREF.get(i["kind"]) in user["prefs"]]
     for item in mine:
       status = tg.send_item(chat_id, item)

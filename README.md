@@ -40,6 +40,9 @@ GitHub Actions **hindi** makakapag-host ng webhook. Kailangan ng web service (ha
 ### 5. Actions secrets
 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `PAGE_ACCESS_TOKEN`, `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN`. (`ADMIN_PSID` optional na lang. Optional din: `KEEPALIVE_URL` = URL ng Render service mo, para ma-ping ng monitor at hindi masyadong natutulog.)
 
+### Single-chat mode (mas magaan, hindi nagfi-freeze)
+Kung isang chat/group lang ang gagamit: `TELEGRAM_CHAT_ID` = chat id na yun, tapos `TG_SINGLE_CHAT=1` sa **Render env vars** at sa **GitHub Secrets**. Yun lang ang sasagutin ng bot, walang per-user subscriptions o onboarding. Sa Render, Start Command: `gunicorn messenger_bot:app --threads 4 --timeout 90`.
+
 ## BulSU memos na may picture
 
 Hindi puwedeng i-scrape nang maayos ang Facebook posts. Dalawang option:

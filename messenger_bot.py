@@ -3,6 +3,7 @@ import hashlib
 import hmac
 import os
 from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 
 from flask import Flask, request
 
@@ -16,6 +17,8 @@ from nlu import WORTH_PHRASES, extract_game_title, has_word
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 _seen_mids = deque(maxlen=500)
+_seen_updates = deque(maxlen=500)
+_pool = ThreadPoolExecutor(max_workers=4)
 
 # ---------- replies ----------
 
@@ -277,11 +280,23 @@ def telegram_webhook():
       "X-Telegram-Bot-Api-Secret-Token", "") != secret:
     return "Forbidden", 403
   update = request.get_json(silent=True) or {}
+  upd_id = update.get("update_id")
+  if upd_id is not None:  # Telegram retries slow webhooks: skip repeats
+    if upd_id in _seen_updates:
+      return "ok", 200
+    _seen_updates.append(upd_id)
+  if os.getenv("PYTEST"):
+    _process_tg(update)
+  else:  # answer Telegram right away; do the slow work in the background
+    _pool.submit(_process_tg, update)
+  return "ok", 200
+
+
+def _process_tg(update):
   try:
     tg.handle_update(update)
-  except Exception as e:  # always 200 so Telegram doesn't retry forever
+  except Exception as e:  # never let one bad update kill the worker
     print(f"[ERROR] Telegram update failed: {e}")
-  return "ok", 200
 
 
 def startup():

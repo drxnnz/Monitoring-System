@@ -10,6 +10,19 @@ from config import KIND_PREF, PREFS
 from nlu import WORTH_PHRASES, extract_game_title, has_word
 
 
+def allowed_chat_ids():
+  """The chat(s) in TELEGRAM_CHAT_ID (comma separated)."""
+  return [c.strip() for c in os.getenv("TELEGRAM_CHAT_ID", "").split(",")
+          if c.strip()]
+
+
+def single_chat_mode():
+  """TG_SINGLE_CHAT=1: only the chat in TELEGRAM_CHAT_ID is served. No
+  per-user subscriptions, no onboarding, far fewer Redis/API calls."""
+  return (os.getenv("TG_SINGLE_CHAT", "").strip() == "1"
+          and bool(allowed_chat_ids()))
+
+
 def esc(s):
   return html.escape(str(s or ""), quote=False)
 
@@ -173,13 +186,20 @@ def say(chat_id, text, markup=None):
 
 
 def welcome(chat_id, user):
+  """No quiz: everything is ON by default; /settings turns things off."""
   user["onboarded"] = True
+  if not user["prefs"]:
+    user["prefs"] = list(PREFS.keys())
   store.save_user(user)
-  send_prefs(
-      chat_id, user,
+  on = ", ".join(PREFS[k] for k in user["prefs"])
+  say(chat_id,
       "Kumusta! 👋 Ako yung update bot para sa game deals, libreng games, "
       "AI/GitHub finds, at BSU/Malolos alerts.\n\n"
-      "Pwede mo rin akong tanungin, hal. “worth it ba ang Hollow Knight?”")
+      f"Naka-on na agad: {esc(on)}\n"
+      "Ayaw ng isa? /settings lang, tap para i-off.\n\n"
+      "Pwede mo rin akong tanungin, hal. “worth it ba ang Hollow Knight?”",
+      menu_markup())
+  show_updates(chat_id, user, intro="Eto muna ang pinakabago:", limit=3)
 
 
 def finish_onboarding(chat_id, user):
@@ -193,9 +213,9 @@ def finish_onboarding(chat_id, user):
   show_updates(chat_id, user, intro="Eto muna ang pinakabago:")
 
 
-def show_updates(chat_id, user, intro=None):
+def show_updates(chat_id, user, intro=None, limit=5):
   kinds = [k for k, p in KIND_PREF.items() if p in user["prefs"]]
-  items = store.get_recent(limit=5, kinds=kinds or None)
+  items = store.get_recent(limit=limit, kinds=kinds or None)
   if not items:
     return say(chat_id, "Wala pang bagong na-detect sa ngayon. Sasabihan "
                "kita pag meron!", menu_markup())
@@ -354,7 +374,8 @@ def handle_text(chat_id, text, private=True, reply=None):
       return handle_worth_text(chat_id, user, args or "worth it", ctx)
     return say(chat_id, HELP, menu_markup())
 
-  new = private and not user["onboarded"] and not user["prefs"]
+  new = (private and not user["onboarded"] and not user["prefs"]
+         and not single_chat_mode())
   if has_word(low, ["stop", "unsubscribe", "tigil"]):
     return stop(chat_id, user)
   if any(p in low for p in WORTH_PHRASES):
@@ -383,6 +404,8 @@ def handle_update(update):
     api("answerCallbackQuery", callback_query_id=cq.get("id"))
     msg = cq.get("message") or {}
     chat_id = (msg.get("chat") or {}).get("id")
+    if single_chat_mode() and str(chat_id) not in allowed_chat_ids():
+      return
     if chat_id and cq.get("data"):
       handle_action(chat_id, cq["data"], msg.get("message_id"))
     return
@@ -391,6 +414,8 @@ def handle_update(update):
     return
   chat = msg.get("chat") or {}
   if chat.get("id") is None or msg.get("from", {}).get("is_bot"):
+    return
+  if single_chat_mode() and str(chat["id"]) not in allowed_chat_ids():
     return
   handle_text(chat["id"], msg.get("text"),
               private=chat.get("type") == "private",
