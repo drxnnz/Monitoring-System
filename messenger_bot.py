@@ -42,7 +42,6 @@ def webhook():
 def handle_message(recipient_id, message_text):
   text_lower = message_text.lower()
 
-  # Ibinabalik natin sa tamang purpose: Updates at info hub
   if "hi" in text_lower or "hello" in text_lower or "kumusta" in text_lower:
     response_text = (
         "Yo! Active na ang updates channel na ito. Pwede kang mag-abang dito"
@@ -56,8 +55,9 @@ def handle_message(recipient_id, message_text):
         " bagong balita at updates!"
     )
   else:
+    # Eto yung inayos ko para hindi na lumabas yung literal na {message_text}
     response_text = (
-        f"Natanggap ko 'yung '{{message_text}}'. Naka-note na 'yan sa sistema"
+        f"Natanggap ko 'yung '{message_text}'. Naka-note na 'yan sa sistema"
         " natin para sa susunod na batch ng updates!"
     )
 
