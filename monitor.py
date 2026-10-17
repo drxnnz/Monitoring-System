@@ -391,19 +391,42 @@ def telegram_send(message):
     return False
 
 
+def strip_html(text):
+  """Remove simple HTML tags so Messenger gets clean plain text."""
+  text = re.sub(r"<[^>]+>", "", text)
+  return html.unescape(text).strip()
+
+
 def facebook_messenger_send(message):
   if not PAGE_ACCESS_TOKEN or not ADMIN_PSID:
     print(
         "[WARN] Facebook Messenger secrets (PAGE_ACCESS_TOKEN or ADMIN_PSID)"
-        " are missing."
+        " are missing. Skip Messenger send."
     )
     return False
-  url = f"https://graph.facebook.com/v18.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-  payload = {"recipient": {"id": ADMIN_PSID}, "message": {"text": message}}
+
+  # Messenger does not support HTML — send plain text only.
+  # Hard limit is ~2000 chars; stay safely under it.
+  plain = strip_html(message)
+  if len(plain) > 1900:
+    plain = plain[:1850] + "\n\n... (truncated, see Telegram/GitHub for full)"
+
+  url = (
+      "https://graph.facebook.com/v18.0/me/messages"
+      f"?access_token={PAGE_ACCESS_TOKEN}"
+  )
+  payload = {
+      "recipient": {"id": ADMIN_PSID},
+      "message": {"text": plain},
+      "messaging_type": "UPDATE",
+  }
   headers = {"Content-Type": "application/json"}
   try:
     r = SESSION.post(url, json=payload, headers=headers, timeout=TIMEOUT)
-    r.raise_for_status()
+    if r.status_code >= 400:
+      # Log the actual Facebook error body so we can debug token/PSID issues
+      print(f"[ERROR] Facebook Messenger HTTP {r.status_code}: {r.text}")
+      return False
     print("Naipadala na ang alert sa Facebook Messenger!")
     return True
   except Exception as e:
