@@ -7,7 +7,7 @@ import requests
 import deals
 import store
 from config import KIND_PREF, PREFS
-from nlu import WORTH_PHRASES, extract_game_title, has_word
+from nlu import PASOK_WORDS, WORTH_PHRASES, extract_game_title, has_word
 
 
 def allowed_chat_ids():
@@ -77,9 +77,9 @@ def _send(chat_id, text, markup=None, photo=None):
 
 def menu_rows():
   return [
-      [{"text": "📰 Ano bago?", "callback_data": "UPDATES"},
+      [{"text": "📰 Ano update?", "callback_data": "UPDATES"},
        {"text": "🆓 Libreng games", "callback_data": "FREE_NOW"}],
-      [{"text": "⚙️ Settings", "callback_data": "SETTINGS"}],
+      [{"text": "🏫 May pasok?", "callback_data": "PASOK"}],
   ]
 
 
@@ -95,15 +95,6 @@ def item_markup(item):
   if item.get("kind") == "game" and deal_id:
     row.append({"text": "🤔 Worth it ba?", "callback_data": f"WORTH|{deal_id}"})
   return {"inline_keyboard": [row]} if row else None
-
-
-def prefs_markup(user):
-  rows = []
-  for key, label in PREFS.items():
-    mark = "✅" if key in user["prefs"] else "⬜"
-    rows.append([{"text": f"{mark} {label}", "callback_data": f"PREF|{key}"}])
-  rows.append([{"text": "👉 Tapos na", "callback_data": "PREF_DONE"}])
-  return {"inline_keyboard": rows}
 
 
 # ---------- items ----------
@@ -162,55 +153,22 @@ def reply_context(reply):
 # ---------- conversation ----------
 
 
-def prefs_text(user, intro=None):
-  on = [PREFS[k] for k in user["prefs"]]
-  status = ("Naka-on ngayon: " + ", ".join(on)) if on else "Wala pang naka-on."
-  head = (esc(intro) + "\n\n") if intro else ""
-  return (head + "Ano gusto mong matanggap? Tap mo lang, pwede more than "
-          f"one. Tap ulit para i-off.\n\n{esc(status)}")
-
-
-def send_prefs(chat_id, user, intro=None, edit_message_id=None):
-  text = prefs_text(user, intro)
-  if edit_message_id:
-    res = api("editMessageText", chat_id=chat_id, message_id=edit_message_id,
-              text=text, parse_mode="HTML", reply_markup=prefs_markup(user))
-    if res.get("ok"):
-      return
-  api("sendMessage", chat_id=chat_id, text=text, parse_mode="HTML",
-      reply_markup=prefs_markup(user))
-
-
 def say(chat_id, text, markup=None):
   return _send(chat_id, text, markup)
 
 
 def welcome(chat_id, user):
-  """No quiz: everything is ON by default; /settings turns things off."""
-  user["onboarded"] = True
-  if not user["prefs"]:
-    user["prefs"] = list(PREFS.keys())
+  """No quiz, no settings: everything is automatic."""
+  store.subscribe_all(user)
   store.save_user(user)
-  on = ", ".join(PREFS[k] for k in user["prefs"])
   say(chat_id,
       "Kumusta! 👋 Ako yung update bot para sa game deals, libreng games, "
-      "AI/GitHub finds, at BSU/Malolos alerts.\n\n"
-      f"Naka-on na agad: {esc(on)}\n"
-      "Ayaw ng isa? /settings lang, tap para i-off.\n\n"
-      "Pwede mo rin akong tanungin, hal. “worth it ba ang Hollow Knight?”",
+      "AI/GitHub finds, at BSU/Malolos alerts. Automatic na lahat, "
+      "ipapadala ko dito pag may bago.\n\n"
+      "Pindutin lang ang buttons sa baba kung gusto mong i-refresh, o "
+      "tanungin mo ako: “worth it ba ang Hollow Knight?”",
       menu_markup())
   show_updates(chat_id, user, intro="Eto muna ang pinakabago:", limit=3)
-
-
-def finish_onboarding(chat_id, user):
-  if not user["prefs"]:
-    return send_prefs(chat_id, user,
-                      "Pumili ka muna kahit isa para may maipadala ako 🙂")
-  on = ", ".join(PREFS[k] for k in user["prefs"])
-  say(chat_id, f"Set na! Ipapadala ko dito agad: {esc(on)}.\n"
-      "Anytime, pwede mong gamitin ang /updates, /free, /settings o "
-      "/worth &lt;game&gt;.", menu_markup())
-  show_updates(chat_id, user, intro="Eto muna ang pinakabago:")
 
 
 def show_updates(chat_id, user, intro=None, limit=5):
@@ -256,6 +214,28 @@ def answer_worth(chat_id, user, snap):
         deals.steam_image(snap["app_id"], snap["thumb"]))
   user["last_game_deal"] = snap.get("deal_id")
   store.save_user(user)
+
+
+def show_pasok(chat_id, user=None):
+  """'May pasok ba?': fresh BSU/Malolos suspension + weather alerts."""
+  import monitor
+  items = []
+  try:
+    items = monitor.fetch_local_alerts()[:3]
+  except Exception as e:
+    print(f"[WARN] pasok lookup failed: {e}")
+  items += [i for i in store.get_recent(limit=2, kinds=["memo"])
+            if i.get("id") not in {x.get("id") for x in items}]
+  if not items:
+    return say(chat_id, "Wala akong na-detect na suspension o weather alert "
+               "para sa Malolos/BulSU ngayon. Auto-detect lang ako mula sa "
+               "news at feeds, kaya i-check pa rin ang official page ng "
+               "BulSU/LGU para sigurado.", menu_markup())
+  for it in items:
+    it.pop("_build", None)
+    send_item(chat_id, it)
+  say(chat_id, "Auto-detect lang ito, i-confirm sa official page ng "
+      "BulSU/LGU.", menu_markup())
 
 
 def answer_free(chat_id, ctx):
@@ -310,8 +290,8 @@ HELP = (
     "Ano kaya ko:\n"
     "• /updates — pinakabagong deals at alerts\n"
     "• /free — libreng Epic games ngayon\n"
+    "• /pasok — may suspension ba?\n"
     "• /worth &lt;game&gt; — sulit ba? (hal. /worth Hades)\n"
-    "• /settings — piliin kung anong updates ang gusto mo\n"
     "• /stop — itigil ang updates\n\n"
     "Pwede mo rin i-type lang: “worth it ba ang Hollow Knight?”"
 )
@@ -319,23 +299,18 @@ HELP = (
 
 def handle_action(chat_id, data, message_id=None):
   user = store.get_user(uid(chat_id))
-  if data.startswith("PREF|"):
-    store.toggle_pref(user, data.split("|", 1)[1])
-    store.save_user(user)
-    return send_prefs(chat_id, user, edit_message_id=message_id)
-  if data == "PREF_DONE":
-    return finish_onboarding(chat_id, user)
-  if data == "SETTINGS":
-    return send_prefs(chat_id, user, "⚙️ Settings")
   if data == "UPDATES":
     return show_updates(chat_id, user)
   if data == "FREE_NOW":
     return show_free_now(chat_id)
+  if data == "PASOK":
+    return show_pasok(chat_id, user)
   if data.startswith("WORTH|"):
     return answer_worth(chat_id, user,
                         deals.snapshot_from_deal_id(data.split("|", 1)[1]))
   if data == "STOP":
     return stop(chat_id, user)
+  return say(chat_id, "Eto ang pwede mong i-tap 👇", menu_markup())
 
 
 def handle_text(chat_id, text, private=True, reply=None):
@@ -345,6 +320,11 @@ def handle_text(chat_id, text, private=True, reply=None):
   ctx = reply_context(reply)
   if not low:
     return
+  new = (private and not user["onboarded"] and not user["prefs"]
+         and not single_chat_mode())
+  if new:  # first contact: subscribe silently, whatever they typed
+    store.subscribe_all(user)
+    store.save_user(user)
 
   if low.startswith("/"):
     cmd, _, args = low.partition(" ")
@@ -354,7 +334,7 @@ def handle_text(chat_id, text, private=True, reply=None):
       if private:
         return welcome(chat_id, user)
       return say(chat_id, "Hi! Gamitin mo ako dito: /worth &lt;game&gt;, "
-                 "/updates, /free. Para sa personal na updates, i-message "
+                 "/updates, /free, /pasok. Para sa personal na updates, i-message "
                  "mo ako nang private 🙂", menu_markup())
     if cmd == "/ping":
       return say(chat_id, "Gising ako ✅")
@@ -364,24 +344,25 @@ def handle_text(chat_id, text, private=True, reply=None):
       return show_updates(chat_id, user)
     if cmd == "/free":
       return show_free_now(chat_id)
-    if cmd == "/settings":
-      if not private:
-        return say(chat_id, "I-message mo ako nang private para sa settings.")
-      return send_prefs(chat_id, user, "⚙️ Settings")
+    if cmd in ("/settings", "/menu"):
+      return say(chat_id, "Eto ang pwede mong i-tap 👇", menu_markup())
+    if cmd == "/pasok":
+      return show_pasok(chat_id, user)
     if cmd == "/stop":
       return stop(chat_id, user)
     if cmd == "/worth":
       return handle_worth_text(chat_id, user, args or "worth it", ctx)
     return say(chat_id, HELP, menu_markup())
 
-  new = (private and not user["onboarded"] and not user["prefs"]
-         and not single_chat_mode())
+
   if has_word(low, ["stop", "unsubscribe", "tigil"]):
     return stop(chat_id, user)
+  if has_word(low, PASOK_WORDS):
+    return show_pasok(chat_id, user)
   if any(p in low for p in WORTH_PHRASES):
     return handle_worth_text(chat_id, user, raw, ctx)
   if has_word(low, ["settings", "setting", "preferences", "menu", "pili"]):
-    return send_prefs(chat_id, user, "⚙️ Settings") if private else None
+    return say(chat_id, "Eto ang pwede mong i-tap 👇", menu_markup())
   if has_word(low, ["free", "libre", "epic"]):
     return show_free_now(chat_id)
   if has_word(low, ["update", "updates", "balita", "bago", "latest", "news"]):
@@ -441,7 +422,7 @@ def configure_webhook(base_url, secret=None):
       {"command": "updates", "description": "Pinakabagong deals at alerts"},
       {"command": "free", "description": "Libreng Epic games ngayon"},
       {"command": "worth", "description": "Sulit ba ang isang game?"},
-      {"command": "settings", "description": "Piliin ang gusto mong updates"},
+      {"command": "pasok", "description": "May suspension ba?"},
       {"command": "stop", "description": "Itigil ang updates"},
   ])
   return res

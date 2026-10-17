@@ -12,7 +12,7 @@ import messenger
 import store
 import tg
 from config import KIND_PREF, PREFS
-from nlu import WORTH_PHRASES, extract_game_title, has_word
+from nlu import PASOK_WORDS, WORTH_PHRASES, extract_game_title, has_word
 
 app = Flask(__name__)
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
@@ -23,51 +23,24 @@ _pool = ThreadPoolExecutor(max_workers=4)
 # ---------- replies ----------
 
 
-def pref_quick_replies(user):
-  qr = []
-  for key, label in PREFS.items():
-    mark = "✅" if key in user["prefs"] else "⬜"
-    qr.append((f"{mark} {label}"[:20], f"PREF|{key}"))
-  qr.append(("👉 Tapos na", "PREF_DONE"))
-  return qr
-
-
-def ask_prefs(psid, user, intro=None):
-  on = [PREFS[k] for k in user["prefs"]]
-  status = ("Naka-on ngayon: " + ", ".join(on)) if on else "Wala pang naka-on."
-  text = (intro + "\n\n" if intro else "") + (
-      "Ano gusto mong matanggap? Tap mo lang, pwede more than one. "
-      f"Tap ulit para i-off.\n\n{status}")
-  messenger.send_text(psid, text, pref_quick_replies(user))
-
-
 def main_menu_qr(pending=0):
-  qr = [("📰 Ano bago?", "UPDATES"), ("🆓 Libreng games", "FREE_NOW"),
-        ("⚙️ Settings", "SETTINGS")]
-  return qr
+  return [("📰 Ano update?", "UPDATES"), ("🆓 Libreng games", "FREE_NOW"),
+          ("🏫 May pasok?", "PASOK")]
 
 
 def welcome(psid, user):
-  user["onboarded"] = True
+  """No quiz, no settings: everything is automatic."""
+  store.subscribe_all(user)
   store.save_user(user)
-  ask_prefs(
-      psid, user,
-      "Kumusta! 👋 Ako yung update bot mo para sa game deals, libreng games, "
-      "AI/GitHub finds, at BSU/Malolos alerts.\n\n"
-      "Pwede mo rin akong tanungin, hal. “worth it ba ang Hollow Knight?”")
-
-
-def finish_onboarding(psid, user):
-  if not user["prefs"]:
-    ask_prefs(psid, user, "Pumili ka muna kahit isa para may maipadala ako 🙂")
-    return
-  on = ", ".join(PREFS[k] for k in user["prefs"])
   messenger.send_text(
       psid,
-      f"Set na! Ipapadala ko dito: {on}.\n\n"
+      "Kumusta! 👋 Ako yung update bot para sa game deals, libreng games, "
+      "AI/GitHub finds, at BSU/Malolos alerts. Automatic na lahat.\n\n"
+      "Pindutin lang ang buttons sa baba para mag-refresh, o tanungin mo "
+      "ako: “worth it ba ang Hollow Knight?”\n\n"
       "⚠️ Rule ng Messenger: makakapag-push lang ako within 24 hours mula "
-      "sa huli mong chat. Kapag lumampas, iipunin ko muna lahat, tapos "
-      "i-type mo lang ang “update” para makuha mo ang na-miss mo.",
+      "sa huli mong chat. Kapag lumampas, iipunin ko muna, tapos i-tap mo "
+      "lang ang “Ano update?” para makuha ang na-miss mo.",
       main_menu_qr())
   show_updates(psid, user, intro="Eto muna ang pinakabago:")
 
@@ -106,6 +79,30 @@ def show_free_now(psid):
     it.pop("_build", None)
     messenger.send_item(psid, it)
   messenger.send_text(psid, "Claim mo na habang libre pa! 🏃", main_menu_qr())
+
+
+def show_pasok(psid, user=None):
+  """'May pasok ba?': fresh BSU/Malolos suspension + weather alerts."""
+  import monitor
+  items = []
+  try:
+    items = monitor.fetch_local_alerts()[:3]
+  except Exception as e:
+    print(f"[WARN] pasok lookup failed: {e}")
+  items += [i for i in store.get_recent(limit=2, kinds=["memo"])
+            if i.get("id") not in {x.get("id") for x in items}]
+  if not items:
+    messenger.send_text(
+        psid, "Wala akong na-detect na suspension o weather alert para sa "
+        "Malolos/BulSU ngayon. Auto-detect lang ako mula sa news at feeds, "
+        "kaya i-check pa rin ang official page ng BulSU/LGU para sigurado.",
+        main_menu_qr())
+    return
+  for it in items:
+    it.pop("_build", None)
+    messenger.send_item(psid, it)
+  messenger.send_text(psid, "Auto-detect lang ito, i-confirm sa official "
+                      "page ng BulSU/LGU.", main_menu_qr())
 
 
 def answer_worth(psid, user, snap):
@@ -156,14 +153,8 @@ def handle_event(psid, text=None, payload=None):
   if payload:
     if payload == "GET_STARTED":
       return welcome(psid, user)
-    if payload.startswith("PREF|"):
-      store.toggle_pref(user, payload.split("|", 1)[1])
-      store.save_user(user)
-      return ask_prefs(psid, user)
-    if payload == "PREF_DONE":
-      return finish_onboarding(psid, user)
-    if payload == "SETTINGS":
-      return ask_prefs(psid, user, "⚙️ Settings")
+    if payload == "PASOK":
+      return show_pasok(psid, user)
     if payload == "UPDATES":
       return show_updates(psid, user)
     if payload == "FREE_NOW":
@@ -181,12 +172,18 @@ def handle_event(psid, text=None, payload=None):
   if not low:
     return None
   new = not user["onboarded"] and not user["prefs"]
+  if new:  # first contact: subscribe silently, whatever they typed
+    store.subscribe_all(user)
+    store.save_user(user)
   if has_word(low, ["stop", "unsubscribe", "tigil", "huwag na", "wag na"]):
     return handle_event(psid, payload="STOP")
+  if has_word(low, PASOK_WORDS):
+    return show_pasok(psid, user)
   if any(p in low for p in WORTH_PHRASES):
     return handle_worth_text(psid, user, text)
   if has_word(low, ["settings", "setting", "preferences", "menu", "pili"]):
-    return ask_prefs(psid, user, "⚙️ Settings")
+    return messenger.send_text(psid, "Eto ang pwede mong i-tap 👇",
+                               main_menu_qr())
   if has_word(low, ["free", "libre", "epic"]):
     return show_free_now(psid)
   if has_word(low, ["update", "updates", "balita", "bago", "latest", "news"]):
@@ -195,7 +192,7 @@ def handle_event(psid, text=None, payload=None):
     if new:
       return welcome(psid, user)
     n = store.pending_count(psid)
-    note = f"\n\n📬 May {n} bagong na-miss ka. Tap “Ano bago?”" if n else ""
+    note = f"\n\n📬 May {n} bagong na-miss ka. Tap “Ano update?”" if n else ""
     return messenger.send_text(
         psid, "Uy! Ano kailangan mo ngayon?" + note, main_menu_qr())
   if new:

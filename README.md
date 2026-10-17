@@ -6,7 +6,7 @@ Tuloy pa rin ang GitHub Actions monitor (every ~15 min), pero may **Messenger bo
 
 - **Game deals**: Orig price → discount → final price, may ≈₱ conversion, Steam rating, lowest-ever price, at rules-based verdict (🔥 Sulit na sulit / 👍 Sulit / 🤔 / ⏳).
 - **Pictures**: Steam header, Epic art, GitHub preview card, at og:image/feed image para sa memos.
-- **Messenger bot**: Get Started → pili ng gusto mong updates (Games / Libre / AI-GitHub / BSU-Malolos) → persistent menu. Tanungin mo: "worth it ba ang Hollow Knight?"
+- **Messenger bot**: Get Started → automatic na lahat ng updates (walang quiz/settings) → menu na may 📰 Ano update? / 🆓 Libreng games / 🏫 May pasok?. Tanungin mo: "worth it ba ang Hollow Knight?"
 - **24h rule workaround**: Pwede lang mag-push ang bot within 24h ng huli mong chat. Kapag lampas na, iniipon ang updates; i-type mo lang ang "update" para makuha lahat ng na-miss.
 - **Bug fixes**: hindi na nawawala ang item kapag pumalya ang send (ire-retry next run), Epic partial discounts hindi na kasama, dealID hindi na double-encoded, "hi" hindi na nagma-match sa "this"/"which".
 

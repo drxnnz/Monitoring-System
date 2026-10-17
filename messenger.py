@@ -104,12 +104,12 @@ def configure_profile():
           "locale": "default",
           "composer_input_disabled": False,
           "call_to_actions": [
-              {"type": "postback", "title": "📰 Ano bago?",
+              {"type": "postback", "title": "📰 Ano update?",
                "payload": "UPDATES"},
               {"type": "postback", "title": "🆓 Libreng games",
                "payload": "FREE_NOW"},
-              {"type": "postback", "title": "⚙️ Settings",
-               "payload": "SETTINGS"},
+              {"type": "postback", "title": "🏫 May pasok?",
+               "payload": "PASOK"},
           ],
       }],
   }

@@ -463,6 +463,9 @@ def fetch_extra_feeds():
     kind = feed.get("kind", "memo")
     label = {"memo": "📌 MEMO / ANNOUNCEMENT"}.get(kind, "📢 LOCAL UPDATE")
     cutoff = now_pht() - timedelta(days=int(feed.get("max_age_days", 3)))
+    # Memos should come with a picture as proof (default ON for memos).
+    require = bool(feed.get("require_image", kind == "memo"))
+    skip_no_image = bool(feed.get("skip_if_no_image", False))
     try:
       r = SESSION.get(url, timeout=TIMEOUT)
       r.raise_for_status()
@@ -492,8 +495,18 @@ def fetch_extra_feeds():
         lines.append(f"📍 {feed.get('name', 'Feed')} {('· ' + stamp) if stamp else ''}".strip())
         image = entry_image(entry)
 
-        def build(rate, link=link, image=image):
-          return {"image": image or og_image(link)}
+        def build(rate, link=link, image=image, lines=lines, req=require,
+                  skip=skip_no_image):
+          img = image or og_image(link)
+          out = {"image": img}
+          if req and not img:
+            if skip:
+              out["_drop"] = True  # held back; retried on the next run
+            else:
+              out["lines"] = lines + [
+                  "⚠️ Walang picture na nakuha. I-verify muna sa link bago "
+                  "mag-share."]
+          return out
 
         found.append({
             "id": "feed:" + stable_id(link),
@@ -645,6 +658,10 @@ def main():
         item.update(build(rate))
       except Exception as e:
         print(f"[WARN] Could not enrich {item['id']}: {e}")
+  fresh = [i for i in fresh if not i.pop("_drop", False)]
+  if not fresh:
+    print("Only items waiting for a picture; will retry next run.")
+    return
 
   # Telegram first. Items that failed there are NOT marked seen, so they are
   # retried next run instead of being lost.

@@ -161,6 +161,13 @@ def all_users():
   return [get_user(p) for p in b.smembers("users")]
 
 
+def subscribe_all(user):
+  """Everyone gets everything by default; no quiz."""
+  user["prefs"] = list(PREFS.keys())
+  user["onboarded"] = True
+  return user
+
+
 def toggle_pref(user, key):
   if key not in PREFS:
     return user
