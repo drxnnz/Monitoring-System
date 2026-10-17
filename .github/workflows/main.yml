@@ -41,6 +41,7 @@ jobs:
           UPSTASH_REDIS_REST_URL: ${{ secrets.UPSTASH_REDIS_REST_URL }}
           UPSTASH_REDIS_REST_TOKEN: ${{ secrets.UPSTASH_REDIS_REST_TOKEN }}
           KEEPALIVE_URL: ${{ secrets.KEEPALIVE_URL }}
+          TG_SINGLE_CHAT: ${{ secrets.TG_SINGLE_CHAT }}
         run: python monitor.py
 
       - name: Save deduplication state
