@@ -68,7 +68,7 @@ def _float(v):
 def steam_image(app_id, thumb=None):
   if app_id and str(app_id) not in ("0", "None", ""):
     return (
-        f"https://cdn.cloudflare.steamstatic.com/steam/apps/{app_id}/header.jpg"
+        f"https://cdn.akamai.steamstatic.com/steam/apps/{app_id}/header.jpg"
     )
   return thumb or None
 
