@@ -143,6 +143,7 @@ def fetch_cheapshark():
             "title": snap["title"],
             "lines": deals.game_lines(snap, rate),
             "image": deals.steam_image(snap["app_id"], snap["thumb"]),
+            "image_alt": [snap["thumb"]] if snap["thumb"] else [],
         }
 
       found.append({
@@ -365,6 +366,28 @@ def clean_text(s):
   return re.sub(r"\s+", " ", html.unescape(s)).strip()
 
 
+def resolve_news_link(link):
+  """Google News RSS links redirect to the publisher. Best-effort resolve."""
+  if "news.google.com" not in link:
+    return link
+  try:  # old-style links embed the URL in base64
+    import base64
+    tail = link.split("/articles/")[-1].split("?")[0]
+    raw = base64.urlsafe_b64decode(tail + "=" * (-len(tail) % 4))
+    m = re.search(rb"https?://[\x21-\x7e]+", raw)
+    if m:
+      return m.group(0).decode("ascii", "ignore")
+  except Exception:
+    pass
+  try:
+    r = SESSION.get(link, timeout=TIMEOUT, allow_redirects=True)
+    if "news.google.com" not in r.url:
+      return r.url
+  except Exception:
+    pass
+  return link
+
+
 def fetch_local_alerts():
   found = []
   queries = [
@@ -411,6 +434,12 @@ def fetch_local_alerts():
             f"🗞️ {src.get('title') or urlparse(publisher_url).hostname}"
             f" · {published.strftime('%b %d, %I:%M %p')}"
         )
+        def build(rate, link=link):
+          # Runs only for unseen alerts: find the article's picture.
+          real = resolve_news_link(link)
+          img = entry_image_from_page(real)
+          return {"image": img} if img else {}
+
         found.append({
             "id": "local:" + stable_id(link + title),
             "kind": "local",
@@ -420,6 +449,7 @@ def fetch_local_alerts():
             "url": link,
             "image": None,
             "meta": {},
+            "_build": build,
         })
       except Exception:
         continue
@@ -449,6 +479,13 @@ def og_image(page_url):
   except Exception as e:
     print(f"[WARN] og:image fetch failed for {page_url}: {e}")
   return None
+
+
+def entry_image_from_page(url):
+  img = og_image(url)
+  if img and "news.google.com" in img:
+    return None  # generic Google logo, not the article
+  return img
 
 
 def entry_image(entry):
