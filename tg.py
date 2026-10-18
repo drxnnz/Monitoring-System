@@ -1,6 +1,8 @@
 """Telegram bot: replies to anyone, onboarding, 'worth it ba?', push helpers."""
 import html
+import json
 import os
+import re
 
 import requests
 
@@ -55,16 +57,76 @@ def api(method, **payload):
     return {"ok": True}
 
 
+def _photo_candidates(photo):
+  """photo: str URL or list of URLs. Adds known-good Steam CDN mirrors."""
+  urls = [photo] if isinstance(photo, str) else list(photo or [])
+  out = []
+  for u in urls:
+    if not u:
+      continue
+    out.append(u)
+    m = re.search(r"/steam/apps/(\d+)/", u)
+    if m:
+      for host in ("cdn.akamai.steamstatic.com",
+                   "shared.fastly.steamstatic.com",
+                   "cdn.cloudflare.steamstatic.com"):
+        out.append(f"https://{host}/steam/apps/{m.group(1)}/header.jpg")
+  seen, uniq = set(), []
+  for u in out:
+    if u not in seen:
+      seen.add(u)
+      uniq.append(u)
+  return uniq
+
+
+def _upload_photo(chat_id, url, text, extra):
+  """Download the image ourselves and upload it (works when Telegram can't
+  fetch the URL, e.g. hotlink-protected hosts). Returns response dict."""
+  token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+  if not token:
+    return {"ok": False, "status": 0}
+  try:
+    img = requests.get(url, timeout=15, headers={
+        "User-Agent": "Mozilla/5.0 (compatible; FreeMonitor/2.0)"})
+    ctype = img.headers.get("content-type", "")
+    if img.status_code != 200 or not ctype.startswith("image") or \
+        len(img.content) > 9_000_000 or len(img.content) < 500:
+      print(f"[WARN] image download failed {url}: {img.status_code} {ctype}")
+      return {"ok": False, "status": 0}
+    data = {"chat_id": str(chat_id), "caption": text, "parse_mode": "HTML"}
+    if extra.get("reply_markup"):
+      data["reply_markup"] = json.dumps(extra["reply_markup"])
+    r = requests.post(
+        f"https://api.telegram.org/bot{token}/sendPhoto", data=data,
+        files={"photo": ("image.jpg", img.content)}, timeout=30)
+    if r.status_code >= 400:
+      print(f"[WARN] Telegram upload HTTP {r.status_code}: {r.text[:200]}")
+      return {"ok": False, "status": r.status_code}
+    return r.json()
+  except Exception as e:
+    print(f"[WARN] photo upload failed {url}: {e}")
+    return {"ok": False, "status": 0}
+
+
 def _send(chat_id, text, markup=None, photo=None):
   """Photo+caption when possible, else plain message. True/False/'blocked'."""
   extra = {"reply_markup": markup} if markup else {}
   if photo and len(text) <= 1000:
-    res = api("sendPhoto", chat_id=chat_id, photo=photo, caption=text,
-              parse_mode="HTML", **extra)
-    if res.get("ok"):
-      return True
-    if res.get("status") == 403:
-      return "blocked"
+    cands = _photo_candidates(photo)
+    for url in cands[:4]:  # let Telegram fetch it first
+      res = api("sendPhoto", chat_id=chat_id, photo=url, caption=text,
+                parse_mode="HTML", **extra)
+      if res.get("ok"):
+        return True
+      if res.get("status") == 403:
+        return "blocked"
+    for url in cands[:2]:  # then try downloading + uploading it ourselves
+      res = _upload_photo(chat_id, url, text, extra)
+      if res.get("ok"):
+        return True
+      if res.get("status") == 403:
+        return "blocked"
+    print(f"[WARN] no photo could be sent for: {text[:60]!r}")
   res = api("sendMessage", chat_id=chat_id, text=text[:4000],
             parse_mode="HTML", disable_web_page_preview=True, **extra)
   if res.get("ok"):
@@ -108,7 +170,8 @@ def item_html(item):
 
 def send_item(chat_id, item):
   """Used by the monitor and the bot. True / False / 'blocked'."""
-  res = _send(chat_id, item_html(item), item_markup(item), item.get("image"))
+  photos = [item.get("image")] + list(item.get("image_alt") or [])
+  res = _send(chat_id, item_html(item), item_markup(item), photos)
   if res is True:
     _remember_alert(chat_id, item)
   return res
