@@ -87,17 +87,34 @@ def esc(s):
   return html.escape(str(s or ""), quote=False)
 
 
+# Minimum original price (USD) para ituring na "AAA" / bayad na laro.
+# Pwedeng palitan sa env: MIN_NORMAL_PRICE=39.99
+MIN_NORMAL_PRICE = float(os.getenv("MIN_NORMAL_PRICE", "29.99"))
+MIN_METACRITIC = int(os.getenv("MIN_METACRITIC", "70"))
+
+
+def is_quality(d):
+  """Iwas pangit na laro: maganda ang Metacritic, o maraming positive reviews."""
+  try:
+    mc = int(float(d.get("metacriticScore") or 0))
+    pct = int(float(d.get("steamRatingPercent") or 0))
+    cnt = int(float(d.get("steamRatingCount") or 0))
+  except Exception:
+    return False
+  return mc >= MIN_METACRITIC or (cnt >= 1000 and pct >= 75)
+
+
 def fetch_cheapshark():
   found = []
   url = "https://www.cheapshark.com/api/1.0/deals"
   params = {
-      "storeID": "1",
+      "storeID": "1,7",  # Steam, GOG
       "pageSize": 60,
       "pageNumber": 0,
       "sortBy": "Savings",
       "desc": 1,
       "onSale": 1,
-      "minimumReviewCount": 500,
+      "upperPrice": 0,  # 100% off lang (libre na)
       "maxAge": 24,
   }
   data = get_json(url, params=params)
@@ -108,9 +125,11 @@ def fetch_cheapshark():
       savings = float(d.get("savings", 0))
       current = float(d.get("salePrice", 0))
       original = float(d.get("normalPrice", 0))
-      if savings < 80 or current < 0 or original <= 0:
+      if savings < 99.5 or current > 0 or original < MIN_NORMAL_PRICE:
         continue
       if d.get("isOnSale") != "1":
+        continue
+      if not is_quality(d):
         continue
       deal_id = d.get("dealID")
       if not deal_id:
@@ -129,7 +148,7 @@ def fetch_cheapshark():
       found.append({
           "id": "game:" + stable_id(deal_id),
           "kind": "game",
-          "category": "🎮 GAME DEAL",
+          "category": "🎁 100% OFF (AAA)",
           "title": d.get("title", "Unknown game"),
           "lines": [],
           "url": deals.redirect_url(deal_id),
@@ -174,6 +193,10 @@ def fetch_epic_free_games():
             continue
           active.append((start, end))
       if not active:
+        continue
+      cents = ((game.get("price") or {}).get("totalPrice") or {}).get(
+          "originalPrice") or 0
+      if cents / 100 < MIN_NORMAL_PRICE:
         continue
       title = game.get("title") or "Epic free game"
       slug = game.get("productSlug") or game.get("urlSlug") or ""
